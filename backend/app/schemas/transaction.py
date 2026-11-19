@@ -1,0 +1,89 @@
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List
+from datetime import datetime, date as Date
+
+
+def _blank_to_none(value):
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
+
+
+class TransactionCreate(BaseModel):
+    account_id: str
+    category_id: Optional[str] = None
+    amount: float = Field(..., gt=0)
+    type: str = Field(..., pattern="^(income|expense|transfer)$")
+    description: str = ""
+    merchant: Optional[str] = None
+    date: Date
+    notes: Optional[str] = None
+    tags: Optional[List[str]] = None
+    is_split: bool = False
+
+    @field_validator("category_id", "merchant", "notes", mode="before")
+    @classmethod
+    def _empty_strings_to_none(cls, v):
+        return _blank_to_none(v)
+
+class TransactionUpdate(BaseModel):
+    account_id: Optional[str] = None
+    category_id: Optional[str] = None
+    amount: Optional[float] = Field(default=None, gt=0)
+    type: Optional[str] = Field(default=None, pattern="^(income|expense|transfer)$")
+    description: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    merchant: Optional[str] = Field(default=None, max_length=120)
+    date: Optional[Date] = None
+    notes: Optional[str] = Field(default=None, max_length=2000)
+    tags: Optional[List[str]] = None
+
+    @field_validator("account_id", "category_id", "merchant", "notes", mode="before")
+    @classmethod
+    def _empty_strings_to_none(cls, v):
+        return _blank_to_none(v)
+
+class TransactionResponse(BaseModel):
+    id: str
+    account_id: str
+    account_name: str = ""
+    user_id: str
+    category_id: Optional[str] = None
+    auto_rule_id: Optional[str] = None
+    category_name: Optional[str] = None
+    category_icon: Optional[str] = None
+    category_color: Optional[str] = None
+    amount: float
+    type: str
+    description: str
+    merchant: Optional[str] = None
+    date: Date
+    is_recurring: bool
+    notes: Optional[str] = None
+    tags: Optional[List[str]] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class TransactionFilterParams(BaseModel):
+    account_id: Optional[str] = None
+    category_id: Optional[str] = None
+    type: Optional[str] = None
+    start_date: Optional[Date] = None
+    end_date: Optional[Date] = None
+    min_amount: Optional[float] = None
+    max_amount: Optional[float] = None
+    merchant: Optional[str] = None
+    search: Optional[str] = None
+    page: int = 1
+    page_size: int = 50
+    sort_by: str = "date"
+    sort_order: str = "desc"
+
+class PaginatedTransactions(BaseModel):
+    items: List[TransactionResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

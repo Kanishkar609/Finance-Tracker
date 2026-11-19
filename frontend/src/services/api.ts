@@ -1,0 +1,342 @@
+import axios, { AxiosError } from 'axios';
+import { AuthTokens } from '../types';
+
+const api = axios.create({
+  baseURL: '/api',
+  headers: { 'Content-Type': 'application/json' },
+});
+
+function getStoredTokens(): AuthTokens | null {
+  try {
+    const raw = localStorage.getItem('auth-storage');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.state?.tokens || null;
+  } catch {
+    return null;
+  }
+}
+
+let isAuthClearing = false;
+let pendingRefresh: Promise<AuthTokens | null> | null = null;
+
+function clearAuth() {
+  if (isAuthClearing) return;
+  isAuthClearing = true;
+  localStorage.removeItem('auth-storage');
+  window.location.href = '/login';
+}
+
+window.addEventListener('auth:logout', () => {
+  isAuthClearing = true;
+});
+
+async function refreshTokens(): Promise<AuthTokens | null> {
+  const tokens = getStoredTokens();
+  if (!tokens?.refresh_token) return null;
+  if (pendingRefresh) return pendingRefresh;
+  pendingRefresh = (async () => {
+    try {
+      const { data } = await axios.post('/api/auth/refresh', {
+        refresh_token: tokens.refresh_token,
+      });
+      try {
+        const raw = localStorage.getItem('auth-storage') || '{}';
+        const stored = JSON.parse(raw);
+        stored.state = { ...stored.state, tokens: data };
+        localStorage.setItem('auth-storage', JSON.stringify(stored));
+      } catch {}
+      return data as AuthTokens;
+    } catch {
+      clearAuth();
+      return null;
+    } finally {
+      pendingRefresh = null;
+    }
+  })();
+  return pendingRefresh;
+}
+
+api.interceptors.request.use((config) => {
+  const tokens = getStoredTokens();
+  if (tokens?.access_token) {
+    config.headers.Authorization = `Bearer ${tokens.access_token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error: AxiosError) => {
+    const originalRequest = error.config as any;
+    if (!originalRequest) return Promise.reject(error);
+    if (originalRequest.url?.includes('/auth/refresh') || originalRequest.url?.includes('/auth/login')) {
+      return Promise.reject(error);
+    }
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+      const newTokens = await refreshTokens();
+      if (newTokens?.access_token) {
+        originalRequest.headers.Authorization = `Bearer ${newTokens.access_token}`;
+        return api(originalRequest);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+export const authApi = {
+  login: (email: string, password: string) =>
+    api.post('/auth/login', { email, password }),
+  register: (email: string, password: string, full_name: string) =>
+    api.post('/auth/register', { email, password, full_name }),
+  refresh: (refresh_token: string) =>
+    api.post('/auth/refresh', { refresh_token }),
+  getMe: () => api.get('/auth/me'),
+  updateProfile: (data: any) => api.put('/auth/profile', data),
+  changePassword: (current_password: string, new_password: string) =>
+    api.post('/auth/change-password', { current_password, new_password }),
+  logout: () => api.post('/auth/logout'),
+};
+
+export const accountsApi = {
+  getAll: (includeArchived = false, page = 0, pageSize = 0) =>
+    api.get(`/accounts/?include_archived=${includeArchived}&page=${page}&page_size=${pageSize}`),
+  getById: (id: string) => api.get(`/accounts/${id}`),
+  getSummary: (id: string) => api.get(`/accounts/${id}/summary`),
+  create: (data: any) => api.post('/accounts/', data),
+  update: (id: string, data: any) => api.put(`/accounts/${id}`, data),
+  delete: (id: string) => api.delete(`/accounts/${id}`),
+};
+
+/**
+ * Normalize a list endpoint response to an array.
+ *
+ * Endpoints return either a bare array or a paginated envelope
+ * ({ items, total, page, page_size, total_pages }). On failure axios
+ * surfaces the error body, which is an object and not iterable — calling
+ * .map() on it previously crashed pages with "o.map is not a function".
+ */
+export function toList<T = any>(data: any): T[] {
+  if (Array.isArray(data)) return data as T[];
+  if (data && Array.isArray(data.items)) return data.items as T[];
+  return [];
+}
+
+export const categoriesApi = {
+  getAll: (type?: string, page = 0, pageSize = 0) => {
+    // Only send `type` when set: an empty `?type=` is rejected by the API.
+    const params = new URLSearchParams();
+    if (type) params.set('type', type);
+    params.set('page', String(page));
+    params.set('page_size', String(pageSize));
+    return api.get(`/categories/?${params.toString()}`);
+  },
+  create: (data: any) => api.post('/categories/', data),
+  update: (id: string, data: any) => api.put(`/categories/${id}`, data),
+  delete: (id: string) => api.delete(`/categories/${id}`),
+  seed: () => api.post('/categories/seed'),
+};
+
+export const categoryRulesApi = {
+  getAll: () => api.get('/category-rules/'),
+  create: (data: any) => api.post('/category-rules/', data),
+  update: (id: string, data: any) => api.put(`/category-rules/${id}`, data),
+  delete: (id: string) => api.delete(`/category-rules/${id}`),
+};
+
+export const transactionsApi = {
+  getAll: (params?: any) => api.get('/transactions/', { params }),
+  getById: (id: string) => api.get(`/transactions/${id}`),
+  create: (data: any) => api.post('/transactions/', data),
+  update: (id: string, data: any) => api.put(`/transactions/${id}`, data),
+  delete: (id: string) => api.delete(`/transactions/${id}`),
+};
+
+export const budgetsApi = {
+  getAll: (activeOnly = false, page = 0, pageSize = 0) =>
+    api.get(`/budgets/?active_only=${activeOnly}&page=${page}&page_size=${pageSize}`),
+  create: (data: any) => api.post('/budgets/', data),
+  update: (id: string, data: any) => api.put(`/budgets/${id}`, data),
+  delete: (id: string) => api.delete(`/budgets/${id}`),
+};
+
+export const recurringApi = {
+  getAll: (activeOnly = false) => api.get(`/recurring/?active_only=${activeOnly}`),
+  create: (data: any) => api.post('/recurring/', data),
+  update: (id: string, data: any) => api.put(`/recurring/${id}`, data),
+  delete: (id: string) => api.delete(`/recurring/${id}`),
+};
+
+export const goalsApi = {
+  getAll: (status?: string, page = 0, pageSize = 0) =>
+    api.get(`/goals/?status=${status || ''}&page=${page}&page_size=${pageSize}`),
+  create: (data: any) => api.post('/goals/', data),
+  update: (id: string, data: any) => api.put(`/goals/${id}`, data),
+  delete: (id: string) => api.delete(`/goals/${id}`),
+};
+
+export const alertsApi = {
+  getAll: (unreadOnly = false, limit = 50) =>
+    api.get(`/alerts/?unread_only=${unreadOnly}&limit=${limit}`),
+  markRead: (id: string) => api.post(`/alerts/${id}/read`),
+  dismiss: (id: string) => api.post(`/alerts/${id}/dismiss`),
+  getPreferences: () => api.get('/alerts/preferences'),
+  updatePreference: (type: string, data: any) =>
+    api.put(`/alerts/preferences/${type}`, data),
+  generate: () => api.post('/alerts/generate'),
+};
+
+export const billsApi = {
+  getAll: (unpaidOnly = false) => api.get(`/bills/?unpaid_only=${unpaidOnly}`),
+  create: (data: any) => api.post('/bills/', data),
+  update: (id: string, data: any) => api.put(`/bills/${id}`, data),
+  delete: (id: string) => api.delete(`/bills/${id}`),
+  upload: (id: string, file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post(`/bills/${id}/upload`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+};
+
+export const memoriesApi = {
+  getAll: (type?: string) => api.get(`/memories/${type ? `?memory_type=${type}` : ''}`),
+  create: (data: any) => api.post('/memories/', data),
+  update: (id: string, data: any) => api.put(`/memories/${id}`, data),
+  delete: (id: string) => api.delete(`/memories/${id}`),
+};
+
+export const ocrApi = {
+  scan: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post('/ocr/scan', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+};
+
+export const voiceApi = {
+  transcribe: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return api.post('/voice/transcribe', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  quickAdd: (formData: FormData, opts: { save?: boolean; account_id?: string } = {}) => {
+    if (opts.save) formData.append('save', 'true');
+    if (opts.account_id) formData.append('account_id', opts.account_id);
+    return api.post('/voice/quick-add', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+};
+
+
+export const analysisApi = {
+  getDashboard: () => api.get('/analysis/dashboard'),
+  getPeriod: (params: any) => api.get('/analysis/period', { params }),
+  getNetWorthTrend: (months: number) => api.get('/analysis/net-worth-trend', { params: { months } }),
+  getCalendar: (year: number, month: number) => api.get('/analysis/calendar', { params: { year, month } }),
+  getCashflow: (days: number, accountId?: string) =>
+    api.get('/analysis/cashflow', { params: { days, ...(accountId ? { account_id: accountId } : {}) } }),
+  getBudgetAdvice: () => api.get('/analysis/budget-advisor'),
+};
+
+
+export const copilotApi = {
+  chat: (data: any) => api.post('/copilot/chat', data),
+  chatStream: (data: any, onEvent: (event: { type: string; content: any }) => void, onDone: () => void, onError: (err: Error) => void) => {
+    const tokens = getStoredTokens();
+    const controller = new AbortController();
+    const doFetch = async (attemptRefresh = true) => {
+      const curTokens = getStoredTokens();
+      const res = await fetch('/api/copilot/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(curTokens?.access_token ? { Authorization: `Bearer ${curTokens.access_token}` } : {}) },
+        body: JSON.stringify(data),
+        signal: controller.signal,
+      });
+      if (res.status === 401 && attemptRefresh) {
+        const newTokens = await refreshTokens();
+        if (newTokens) return doFetch(false);
+      }
+      return res;
+    };
+    doFetch().then(async (response) => {
+      if (!response || !response.ok || !response.body) {
+        onError(new Error(`HTTP ${response?.status ?? 0}`));
+        try { onDone(); } catch {}
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const parsed = JSON.parse(line.slice(6));
+                onEvent(parsed);
+                if (parsed.type === 'done') {
+                  try { onDone(); } catch {}
+                }
+              } catch { /* skip malformed */ }
+            }
+          }
+        }
+        if (buffer.startsWith('data: ')) {
+          try { onEvent(JSON.parse(buffer.slice(6))); } catch {}
+        }
+      } catch (e: any) {
+        if (e?.name !== 'AbortError') onError(e);
+      } finally {
+        try { onDone(); } catch {}
+      }
+    }).catch((err) => {
+      if (err.name !== 'AbortError') onError(err);
+      try { onDone(); } catch {}
+    });
+    return controller;
+  },
+  simulate: (data: any) => api.post('/copilot/simulate', data),
+};
+
+export const onboardingApi = {
+  complete: () => api.patch('/auth/onboarding'),
+};
+
+export const adminApi = {
+  getStats: () => api.get('/admin/stats'),
+};
+
+export const importApi = {
+  preview: (file: File, options: any = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('options', JSON.stringify(options));
+    return api.post('/import/preview', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  execute: (file: File, options: any = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('options', JSON.stringify(options));
+    return api.post('/import/execute', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+
+};
+
+export default api;
