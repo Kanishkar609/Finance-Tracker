@@ -12,7 +12,7 @@ insights) backed by Ollama Cloud.
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15%2B%20%2B%20pgvector-4169E1?style=flat-square&logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-5%2B-DC382D?style=flat-square&logo=redis&logoColor=white)
 
-**Version 1.1.0** · Deployed at `https://finance.shashankakumar.com`
+**Version 1.1.0** ·
 
 > [!NOTE]
 > This README describes the system as it is today, including the parts that do not work.
